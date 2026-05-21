@@ -15,7 +15,7 @@ const corsHeaders = {
 };
 
 // !! REPLACE THIS WITH YOUR FRESH KEY FROM aistudio.google.com !!
-const GEMINI_API_KEY = 'AIzaSyBAFoqxnaHWypBZils-RRMQqRqJNXFNX2E';
+const GEMINI_API_KEY = 'AIzaSyDnsWUAT_OmLG0MU7acrlnex8rg_mKsxQM';
 
 async function getGeminiReply(userMessage, roomName) {
   try {
