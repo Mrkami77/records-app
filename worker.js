@@ -1,25 +1,20 @@
-// Simple JWT
 async function generateToken(user) {
   return btoa(`${user.id}|${user.username}|${Date.now()}`);
 }
-
 async function verifyToken(token) {
   try {
     const decoded = atob(token);
     const [userId, username] = decoded.split('|');
     return { id: parseInt(userId), username };
-  } catch {
-    return null;
-  }
+  } catch { return null; }
 }
-
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+  'Access-Control-Allow-Methods': 'GET, POST, DELETE, OPTIONS',
   'Access-Control-Allow-Headers': 'Content-Type, Authorization',
 };
 
-// PASTE YOUR REAL GEMINI API KEY BELOW (no dashes in the middle)
+// !! REPLACE THIS WITH YOUR FRESH KEY FROM aistudio.google.com !!
 const GEMINI_API_KEY = 'AIzaSyBAFoqxnaHWypBZils-RRMQqRqJNXFNX2E';
 
 async function getGeminiReply(userMessage, roomName) {
@@ -30,25 +25,14 @@ async function getGeminiReply(userMessage, roomName) {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          contents: [{
-            parts: [{
-              text: `You are a helpful AI assistant in a chat room called "${roomName}". Reply concisely and helpfully to: ${userMessage}`
-            }]
-          }]
+          contents: [{ parts: [{ text: `You are a helpful AI assistant in a chat room called "${roomName}". Reply concisely and helpfully to: ${userMessage}` }] }]
         })
       }
     );
     const data = await res.json();
-
-    // If there's an API error, return it as a visible message so you can debug
-    if (data.error) {
-      return `[Gemini error: ${data.error.message}]`;
-    }
-
-    return data?.candidates?.[0]?.content?.parts?.[0]?.text || '[Gemini returned no reply]';
-  } catch (e) {
-    return `[Gemini fetch failed: ${e.message}]`;
-  }
+    if (data.error) return `[Gemini error: ${data.error.message}]`;
+    return data?.candidates?.[0]?.content?.parts?.[0]?.text || '[No reply]';
+  } catch (e) { return `[Gemini error: ${e.message}]`; }
 }
 
 export default {
@@ -56,152 +40,107 @@ export default {
     const url = new URL(request.url);
     const path = url.pathname;
     const method = request.method;
-
-    if (method === 'OPTIONS') {
-      return new Response(null, { headers: corsHeaders });
-    }
+    if (method === 'OPTIONS') return new Response(null, { headers: corsHeaders });
 
     const publicPaths = ['/api/auth/login', '/api/auth/register', '/'];
-    let user = null;
-    let isPublic = false;
-
-    for (const p of publicPaths) {
-      if (path === p) { isPublic = true; break; }
-    }
+    let user = null, isPublic = false;
+    for (const p of publicPaths) if (path === p) { isPublic = true; break; }
 
     if (!isPublic) {
-      const authHeader = request.headers.get('Authorization');
-      if (!authHeader || !authHeader.startsWith('Bearer ')) {
-        return new Response(JSON.stringify({ error: 'Unauthorized' }),
-          { status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
-      }
-      user = await verifyToken(authHeader.split(' ')[1]);
-      if (!user) {
-        return new Response(JSON.stringify({ error: 'Invalid token' }),
-          { status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
-      }
+      const auth = request.headers.get('Authorization');
+      if (!auth || !auth.startsWith('Bearer ')) return new Response(JSON.stringify({ error: 'Unauthorized' }), { status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+      user = await verifyToken(auth.split(' ')[1]);
+      if (!user) return new Response(JSON.stringify({ error: 'Invalid token' }), { status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
     }
 
     if (path === '/') return serveHTML();
     if (path === '/api/auth/register' && method === 'POST') return handleRegister(request, env);
     if (path === '/api/auth/login' && method === 'POST') return handleLogin(request, env);
-    if (path === '/api/messages' && method === 'GET') {
-      const roomId = url.searchParams.get('room') || 'general';
-      return getMessages(env, roomId);
-    }
+    if (path === '/api/messages' && method === 'GET') return getMessages(env, url.searchParams.get('room') || 'general');
     if (path === '/api/messages' && method === 'POST') return sendMessage(request, env, user);
+    if (path.startsWith('/api/messages/') && method === 'DELETE') return deleteMessage(request, env, user, path);
     if (path === '/api/rooms' && method === 'GET') return getRooms(env);
+    if (path === '/api/rooms' && method === 'POST') return createRoom(request, env, user);
 
-    return new Response(JSON.stringify({ error: 'Not Found' }),
-      { status: 404, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+    return new Response(JSON.stringify({ error: 'Not Found' }), { status: 404, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
   },
 };
 
 async function handleRegister(request, env) {
   try {
     const { username, email, password } = await request.json();
-    if (!username || !email || !password) {
-      return new Response(JSON.stringify({ error: 'All fields required' }),
-        { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
-    }
+    if (!username || !email || !password) return new Response(JSON.stringify({ error: 'All fields required' }), { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
     const hash = btoa(password + 'salt');
     try {
-      await env.DB.prepare(
-        `INSERT INTO users (username, email, password_hash, status, last_seen) VALUES (?, ?, ?, 'online', CURRENT_TIMESTAMP)`
-      ).bind(username, email, hash).run();
+      await env.DB.prepare(`INSERT INTO users (username, email, password_hash, status, last_seen) VALUES (?, ?, ?, 'online', CURRENT_TIMESTAMP)`).bind(username, email, hash).run();
       const user = await env.DB.prepare(`SELECT id, username FROM users WHERE username = ?`).bind(username).first();
       const token = await generateToken(user);
-      return new Response(JSON.stringify({ success: true, token, user }),
-        { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+      return new Response(JSON.stringify({ success: true, token, user }), { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
     } catch (err) {
-      return new Response(JSON.stringify({ error: 'Username already exists' }),
-        { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+      return new Response(JSON.stringify({ error: 'Username already exists' }), { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
     }
-  } catch (err) {
-    return new Response(JSON.stringify({ error: err.message }),
-      { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
-  }
+  } catch (err) { return new Response(JSON.stringify({ error: err.message }), { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }); }
 }
 
 async function handleLogin(request, env) {
   try {
     const { username, password } = await request.json();
     const hash = btoa(password + 'salt');
-    const user = await env.DB.prepare(
-      `SELECT id, username FROM users WHERE username = ? AND password_hash = ?`
-    ).bind(username, hash).first();
-    if (!user) {
-      return new Response(JSON.stringify({ error: 'Invalid credentials' }),
-        { status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
-    }
+    const user = await env.DB.prepare(`SELECT id, username FROM users WHERE username = ? AND password_hash = ?`).bind(username, hash).first();
+    if (!user) return new Response(JSON.stringify({ error: 'Invalid credentials' }), { status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
     await env.DB.prepare(`UPDATE users SET status = 'online', last_seen = CURRENT_TIMESTAMP WHERE id = ?`).bind(user.id).run();
     const token = await generateToken(user);
-    return new Response(JSON.stringify({ success: true, token, user }),
-      { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
-  } catch (err) {
-    return new Response(JSON.stringify({ error: err.message }),
-      { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
-  }
+    return new Response(JSON.stringify({ success: true, token, user }), { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+  } catch (err) { return new Response(JSON.stringify({ error: err.message }), { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }); }
 }
 
 async function getMessages(env, roomId) {
   try {
-    const messages = await env.DB.prepare(
-      `SELECT id, user_id, username, message, created_at FROM messages WHERE room_id = ? ORDER BY created_at ASC LIMIT 100`
-    ).bind(roomId).all();
-    return new Response(JSON.stringify(messages.results || []),
-      { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
-  } catch (err) {
-    return new Response(JSON.stringify([]),
-      { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
-  }
+    const messages = await env.DB.prepare(`SELECT id, user_id, username, message, created_at FROM messages WHERE room_id = ? AND is_deleted = 0 ORDER BY created_at ASC LIMIT 100`).bind(roomId).all();
+    return new Response(JSON.stringify(messages.results || []), { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+  } catch (err) { return new Response(JSON.stringify([]), { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }); }
 }
 
 async function sendMessage(request, env, user) {
   try {
     const { roomId, message } = await request.json();
-    if (!message || message.trim() === '') {
-      return new Response(JSON.stringify({ error: 'Message cannot be empty' }),
-        { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
-    }
-
-    // Save user message
-    await env.DB.prepare(
-      `INSERT INTO messages (room_id, user_id, username, message) VALUES (?, ?, ?, ?)`
-    ).bind(roomId, user.id, user.username, message).run();
-
-    // Get room name for context
+    if (!message || message.trim() === '') return new Response(JSON.stringify({ error: 'Empty message' }), { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+    await env.DB.prepare(`INSERT INTO messages (room_id, user_id, username, message) VALUES (?, ?, ?, ?)`).bind(roomId, user.id, user.username, message).run();
     let roomName = roomId;
-    try {
-      const room = await env.DB.prepare(`SELECT name FROM rooms WHERE id = ?`).bind(roomId).first();
-      if (room) roomName = room.name;
-    } catch(e) {}
-
-    // Get Gemini AI reply
+    try { const room = await env.DB.prepare(`SELECT name FROM rooms WHERE id = ?`).bind(roomId).first(); if (room) roomName = room.name; } catch(e) {}
     const aiReply = await getGeminiReply(message, roomName);
-    if (aiReply) {
-      await env.DB.prepare(
-        `INSERT INTO messages (room_id, user_id, username, message) VALUES (?, ?, ?, ?)`
-      ).bind(roomId, 0, 'Gemini AI', aiReply).run();
-    }
+    if (aiReply) await env.DB.prepare(`INSERT INTO messages (room_id, user_id, username, message) VALUES (?, ?, ?, ?)`).bind(roomId, 0, 'Gemini AI', aiReply).run();
+    return new Response(JSON.stringify({ success: true }), { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+  } catch (err) { return new Response(JSON.stringify({ error: err.message }), { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }); }
+}
 
-    return new Response(JSON.stringify({ success: true }),
-      { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
-  } catch (err) {
-    return new Response(JSON.stringify({ error: err.message }),
-      { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
-  }
+async function deleteMessage(request, env, user, path) {
+  try {
+    const msgId = parseInt(path.split('/').pop());
+    const msg = await env.DB.prepare(`SELECT user_id FROM messages WHERE id = ?`).bind(msgId).first();
+    if (!msg) return new Response(JSON.stringify({ error: 'Not found' }), { status: 404, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+    // Allow user to delete their own, or AI messages (user_id=0)
+    if (msg.user_id !== user.id && msg.user_id !== 0) return new Response(JSON.stringify({ error: 'Forbidden' }), { status: 403, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+    await env.DB.prepare(`UPDATE messages SET is_deleted = 1 WHERE id = ?`).bind(msgId).run();
+    return new Response(JSON.stringify({ success: true }), { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+  } catch (err) { return new Response(JSON.stringify({ error: err.message }), { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }); }
 }
 
 async function getRooms(env) {
   try {
     const rooms = await env.DB.prepare(`SELECT id, name FROM rooms ORDER BY name`).all();
-    return new Response(JSON.stringify(rooms.results || []),
-      { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
-  } catch (err) {
-    return new Response(JSON.stringify([]),
-      { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
-  }
+    return new Response(JSON.stringify(rooms.results || []), { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+  } catch (err) { return new Response(JSON.stringify([]), { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }); }
+}
+
+async function createRoom(request, env, user) {
+  try {
+    const { name } = await request.json();
+    if (!name || name.trim() === '') return new Response(JSON.stringify({ error: 'Room name required' }), { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+    const id = name.toLowerCase().replace(/[^a-z0-9]/g, '-') + '-' + Date.now();
+    await env.DB.prepare(`INSERT INTO rooms (id, name, type, created_by) VALUES (?, ?, 'public', ?)`).bind(id, name.trim(), user.id).run();
+    return new Response(JSON.stringify({ success: true, id, name }), { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+  } catch (err) { return new Response(JSON.stringify({ error: err.message }), { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }); }
 }
 
 function serveHTML() {
@@ -215,7 +154,6 @@ function serveHTML() {
 *{margin:0;padding:0;box-sizing:border-box}
 body{font-family:'Google Sans',Arial,sans-serif;background:#1a1b1e;color:#e3e3e3;height:100vh;display:flex;overflow:hidden}
 
-/* ── Sidebar ── */
 .sidebar{width:280px;background:#25262b;display:flex;flex-direction:column;flex-shrink:0}
 .logo{display:flex;align-items:center;gap:10px;padding:20px 20px 12px}
 .logo-gem{width:34px;height:34px;border-radius:50%;background:linear-gradient(135deg,#8ab4f8,#c58af9);display:flex;align-items:center;justify-content:center;font-size:18px;flex-shrink:0}
@@ -227,7 +165,7 @@ body{font-family:'Google Sans',Arial,sans-serif;background:#1a1b1e;color:#e3e3e3
 .nav-item{display:flex;align-items:center;gap:10px;padding:10px 12px;border-radius:10px;cursor:pointer;font-size:14px;color:#c4c7c5;transition:background .15s;margin:1px 0}
 .nav-item:hover{background:#2e2f35}
 .nav-item.active{background:#2e2f35;color:#e3e3e3}
-.nav-item .nav-hash{color:#8ab4f8;font-weight:600;font-size:16px;width:18px;text-align:center}
+.nav-hash{color:#8ab4f8;font-weight:600;font-size:16px;width:18px;text-align:center}
 .history-section{flex:1;overflow-y:auto;padding:0 8px}
 .history-section::-webkit-scrollbar{width:3px}
 .history-section::-webkit-scrollbar-thumb{background:#3a3b40;border-radius:2px}
@@ -244,10 +182,7 @@ body{font-family:'Google Sans',Arial,sans-serif;background:#1a1b1e;color:#e3e3e3
 .logout-btn{background:none;border:none;color:#9aa0a6;cursor:pointer;font-size:20px;padding:2px 4px;border-radius:6px;line-height:1;transition:color .15s}
 .logout-btn:hover{color:#e3e3e3}
 
-/* ── Main ── */
 .main{flex:1;display:flex;flex-direction:column;overflow:hidden;background:#1a1b1e}
-
-/* ── Login ── */
 .login-wrap{flex:1;display:flex;align-items:center;justify-content:center;background:#1a1b1e}
 .login-card{background:#25262b;border:1px solid #3a3b40;border-radius:24px;padding:44px 40px;width:380px}
 .lc-header{text-align:center;margin-bottom:32px}
@@ -262,10 +197,7 @@ body{font-family:'Google Sans',Arial,sans-serif;background:#1a1b1e;color:#e3e3e3
 .sw{text-align:center;margin-top:18px;font-size:13px;color:#9aa0a6}
 .sw a{color:#8ab4f8;cursor:pointer}
 
-/* ── Chat ── */
 .chat-area{display:none;flex:1;flex-direction:column;overflow:hidden}
-
-/* header */
 .room-header{padding:14px 24px;display:flex;align-items:center;gap:12px;background:#25262b;border-bottom:1px solid #2e2f35}
 .rh-icon{width:36px;height:36px;border-radius:10px;background:#2e2f35;display:flex;align-items:center;justify-content:center;font-size:16px;color:#8ab4f8;font-weight:700}
 .rh-info h2{font-size:16px;font-weight:500;color:#e3e3e3}
@@ -274,11 +206,11 @@ body{font-family:'Google Sans',Arial,sans-serif;background:#1a1b1e;color:#e3e3e3
 .rh-tab{padding:6px 14px;border-radius:20px;cursor:pointer;font-size:13px;color:#9aa0a6;border:none;background:transparent;transition:all .15s}
 .rh-tab.active,.rh-tab:hover{background:#2e2f35;color:#e3e3e3}
 
-/* messages */
 .msgs{flex:1;overflow-y:auto;padding:24px 0;background:#1a1b1e}
 .msgs::-webkit-scrollbar{width:4px}
 .msgs::-webkit-scrollbar-thumb{background:#3a3b40;border-radius:2px}
-.msg-row{display:flex;gap:12px;padding:4px 28px;max-width:900px;margin:0 auto;width:100%}
+.msg-row{display:flex;gap:12px;padding:4px 28px;max-width:900px;margin:0 auto;width:100%;position:relative}
+.msg-row:hover .del-btn{opacity:1}
 .msg-row.own{flex-direction:row-reverse}
 .m-av{width:34px;height:34px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:600;flex-shrink:0;align-self:flex-end}
 .m-av.other-av{background:#3a3b40;color:#e3e3e3}
@@ -293,12 +225,27 @@ body{font-family:'Google Sans',Arial,sans-serif;background:#1a1b1e;color:#e3e3e3
 .m-bubble.ai{background:#1e3a2e;color:#e3e3e3;border-bottom-left-radius:4px;border-left:2px solid #34a853}
 .m-time{font-size:11px;color:#9aa0a6;margin-top:4px;padding:0 4px}
 .msg-row.own .m-time{text-align:right}
+.del-btn{position:absolute;top:50%;transform:translateY(-50%);background:#2e2f35;border:1px solid #3a3b40;color:#9aa0a6;border-radius:6px;padding:3px 8px;font-size:12px;cursor:pointer;opacity:0;transition:opacity .15s;line-height:1.4}
+.del-btn:hover{background:#3a1a1a;color:#ff6b6b;border-color:#ff6b6b}
+.msg-row:not(.own) .del-btn{right:4px}
+.msg-row.own .del-btn{left:4px}
 .empty-state{text-align:center;padding:100px 40px;color:#5f6368}
 .es-icon{font-size:52px;margin-bottom:14px}
 .empty-state h3{font-size:18px;font-weight:400;color:#9aa0a6;margin-bottom:6px}
 .empty-state p{font-size:13px;color:#5f6368}
 
-/* typing indicator */
+/* New chat modal */
+.modal-bg{position:fixed;inset:0;background:rgba(0,0,0,.6);display:flex;align-items:center;justify-content:center;z-index:100}
+.modal{background:#25262b;border:1px solid #3a3b40;border-radius:20px;padding:32px;width:360px}
+.modal h3{font-size:18px;font-weight:500;margin-bottom:20px;color:#e3e3e3}
+.modal input{width:100%;padding:12px 16px;background:#1a1b1e;border:1px solid #3a3b40;border-radius:12px;font-size:14px;color:#e3e3e3;outline:none;margin-bottom:16px}
+.modal input:focus{border-color:#8ab4f8}
+.modal input::placeholder{color:#9aa0a6}
+.modal-btns{display:flex;gap:10px;justify-content:flex-end}
+.modal-btns button{padding:9px 20px;border-radius:10px;font-size:14px;cursor:pointer;border:none;font-weight:500}
+.btn-cancel{background:#2e2f35;color:#9aa0a6}
+.btn-create{background:#8ab4f8;color:#131314}
+
 .typing-row{display:flex;gap:12px;padding:4px 28px;max-width:900px;margin:0 auto;width:100%}
 .typing-bubble{padding:12px 18px;background:#2e2f35;border-radius:18px;border-bottom-left-radius:4px;display:flex;align-items:center;gap:4px}
 .dot{width:7px;height:7px;border-radius:50%;background:#9aa0a6;animation:bounce 1.2s infinite}
@@ -306,7 +253,6 @@ body{font-family:'Google Sans',Arial,sans-serif;background:#1a1b1e;color:#e3e3e3
 .dot:nth-child(3){animation-delay:.4s}
 @keyframes bounce{0%,60%,100%{transform:translateY(0)}30%{transform:translateY(-6px)}}
 
-/* input */
 .input-wrap{padding:14px 28px 20px;max-width:900px;margin:0 auto;width:100%;background:#1a1b1e}
 .input-box{background:#25262b;border:1px solid #3a3b40;border-radius:24px;display:flex;align-items:flex-end;gap:8px;padding:8px 8px 8px 18px;transition:border-color .15s}
 .input-box:focus-within{border-color:#8ab4f8}
@@ -321,13 +267,24 @@ body{font-family:'Google Sans',Arial,sans-serif;background:#1a1b1e;color:#e3e3e3
 </head>
 <body>
 
-<!-- SIDEBAR -->
+<!-- NEW CHAT MODAL -->
+<div class="modal-bg" id="modalBg" style="display:none" onclick="if(event.target===this)closeModal()">
+  <div class="modal">
+    <h3>New chat room</h3>
+    <input id="newRoomName" placeholder="Room name (e.g. Design, Gaming...)" maxlength="40">
+    <div class="modal-btns">
+      <button class="btn-cancel" onclick="closeModal()">Cancel</button>
+      <button class="btn-create" onclick="createRoom()">Create</button>
+    </div>
+  </div>
+</div>
+
 <div class="sidebar" id="sidebar">
   <div class="logo">
     <div class="logo-gem">&#10022;</div>
     <span class="logo-text">Chat</span>
   </div>
-  <button class="new-chat-btn" onclick="newChat()">
+  <button class="new-chat-btn" onclick="openModal()">
     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
     New chat
   </button>
@@ -347,10 +304,7 @@ body{font-family:'Google Sans',Arial,sans-serif;background:#1a1b1e;color:#e3e3e3
   </div>
 </div>
 
-<!-- MAIN -->
 <div class="main">
-
-  <!-- LOGIN -->
   <div class="login-wrap" id="loginPage">
     <div class="login-card">
       <div class="lc-header">
@@ -362,19 +316,16 @@ body{font-family:'Google Sans',Arial,sans-serif;background:#1a1b1e;color:#e3e3e3
       <input class="fi" type="password" id="password" placeholder="Password">
       <div id="emailWrap" style="display:none"><input class="fi" type="email" id="email" placeholder="Email"></div>
       <button class="lb" id="submitBtn" onclick="handleAuth()">Continue</button>
-      <div class="sw">
-        <span id="swText">New here? </span><a id="swLink" onclick="toggleMode()">Create account</a>
-      </div>
+      <div class="sw"><span id="swText">New here? </span><a id="swLink" onclick="toggleMode()">Create account</a></div>
     </div>
   </div>
 
-  <!-- CHAT -->
   <div class="chat-area" id="chatArea">
     <div class="room-header">
       <div class="rh-icon" id="roomIcon">#</div>
       <div class="rh-info">
         <h2 id="curRoomName">General Chat</h2>
-        <p>Public room &bull; AI-powered</p>
+        <p>Public room &bull; Gemini AI-powered</p>
       </div>
       <div class="rh-tabs" id="rhTabs"></div>
     </div>
@@ -396,7 +347,7 @@ body{font-family:'Google Sans',Arial,sans-serif;background:#1a1b1e;color:#e3e3e3
           <svg width="18" height="18" viewBox="0 0 24 24"><path d="M2 21l21-9L2 3v7l15 2-15 2v7z"/></svg>
         </button>
       </div>
-      <div class="input-hint">Gemini AI replies to every message</div>
+      <div class="input-hint">Gemini AI replies to every message &bull; Hover message to delete</div>
     </div>
   </div>
 </div>
@@ -419,11 +370,7 @@ async function handleAuth(){
   const p=document.getElementById('password').value;
   if(!u||!p){alert('Please fill all fields');return;}
   if(isLogin){await doLogin(u,p);}
-  else{
-    const e=document.getElementById('email').value;
-    if(!e||!e.includes('@')){alert('Enter a valid email');return;}
-    await doRegister(u,e,p);
-  }
+  else{const e=document.getElementById('email').value;if(!e||!e.includes('@')){alert('Enter a valid email');return;}await doRegister(u,e,p);}
 }
 
 async function doLogin(username,password){
@@ -450,8 +397,7 @@ async function startChat(){
   document.getElementById('userRow').style.display='flex';
   document.getElementById('uAvatar').textContent=(currentUser.username||'?').charAt(0).toUpperCase();
   document.getElementById('uName').textContent=currentUser.username;
-  await loadRooms();
-  await loadMessages();
+  await loadRooms();await loadMessages();
   addHistory(currentRoom,currentRoomName);
   if(refreshInterval)clearInterval(refreshInterval);
   refreshInterval=setInterval(loadMessages,3000);
@@ -461,13 +407,12 @@ async function loadRooms(){
   try{
     const r=await fetch('/api/rooms',{headers:{'Authorization':'Bearer '+token}});
     const rooms=await r.json();
-    const nl=document.getElementById('roomsList');
-    const tabs=document.getElementById('rhTabs');
+    const nl=document.getElementById('roomsList');const tabs=document.getElementById('rhTabs');
     nl.innerHTML='';tabs.innerHTML='';
     rooms.forEach(room=>{
       const div=document.createElement('div');
       div.className='nav-item'+(room.id===currentRoom?' active':'');
-      div.innerHTML='<span class="nav-hash">#</span><span>'+escHtml(room.name)+'</span>';
+      div.innerHTML='<span class="nav-hash">#</span><span>'+escH(room.name)+'</span>';
       div.onclick=()=>switchRoom(room.id,room.name);
       nl.appendChild(div);
       const tab=document.createElement('button');
@@ -486,35 +431,31 @@ function switchRoom(id,name){
   document.getElementById('msgTa').placeholder='Message '+name+'...';
   document.querySelectorAll('.nav-item').forEach(x=>x.classList.remove('active'));
   document.querySelectorAll('.rh-tab').forEach(x=>x.classList.remove('active'));
-  addHistory(id,name);
-  loadMessages();
+  addHistory(id,name);loadMessages();
 }
 
 function addHistory(id,name){
   let h=JSON.parse(localStorage.getItem('ch')||'[]');
-  h=h.filter(x=>x.id!==id);
-  h.unshift({id,name,t:Date.now()});
-  h=h.slice(0,10);
-  localStorage.setItem('ch',JSON.stringify(h));
-  renderHistory(h);
+  h=h.filter(x=>x.id!==id);h.unshift({id,name,t:Date.now()});h=h.slice(0,10);
+  localStorage.setItem('ch',JSON.stringify(h));renderHistory(h);
 }
 
 function renderHistory(h){
-  const c=document.getElementById('historyList');
-  c.innerHTML='';
+  const c=document.getElementById('historyList');c.innerHTML='';
   if(!h||!h.length){c.innerHTML='<div style="padding:10px 12px;color:#5f6368;font-size:13px">No recent chats</div>';return;}
   h.forEach(item=>{
     const div=document.createElement('div');
     div.className='hist-item'+(item.id===currentRoom?' active':'');
     const d=new Date(item.t);
     const lbl=d.toLocaleDateString(undefined,{month:'short',day:'numeric'});
-    div.innerHTML='<div class="hist-date">'+lbl+'</div><div class="hist-name"># '+escHtml(item.name||item.id)+'</div>';
+    div.innerHTML='<div class="hist-date">'+lbl+'</div><div class="hist-name"># '+escH(item.name||item.id)+'</div>';
     div.onclick=()=>switchRoom(item.id,item.name||item.id);
     c.appendChild(div);
   });
 }
 
 async function loadMessages(){
+  if(sending)return;
   try{
     const r=await fetch('/api/messages?room='+currentRoom,{headers:{'Authorization':'Bearer '+token}});
     const msgs=await r.json();
@@ -524,77 +465,96 @@ async function loadMessages(){
       area.innerHTML='<div class="empty-state"><div class="es-icon">&#10022;</div><h3>Ask Gemini anything</h3><p>Send a message and Gemini AI will reply</p></div>';
       return;
     }
-    // Remove typing indicator if present before re-render
-    area.innerHTML='';
-    let lastUser=null;
+    area.innerHTML='';let lastUser=null;
     msgs.forEach(msg=>{
       const isOwn=msg.user_id===currentUser.id;
       const isAI=msg.username==='Gemini AI';
-      const showName=msg.username!==lastUser;
-      lastUser=msg.username;
+      const showName=msg.username!==lastUser;lastUser=msg.username;
       const row=document.createElement('div');
       row.className='msg-row'+(isOwn?' own':'');
+
       const av=document.createElement('div');
       av.className='m-av '+(isOwn?'own-av':isAI?'ai-av':'other-av');
       av.textContent=isAI?'G':(msg.username||'?').charAt(0).toUpperCase();
+
       const content=document.createElement('div');content.className='m-content';
       if(showName){const n=document.createElement('div');n.className='m-name';n.textContent=isAI?'Gemini AI':msg.username;content.appendChild(n);}
+
       const bubble=document.createElement('div');
       bubble.className='m-bubble '+(isOwn?'own':isAI?'ai':'other');
       bubble.textContent=msg.message;
+
       const time=document.createElement('div');time.className='m-time';
       time.textContent=new Date(msg.created_at).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'});
       content.appendChild(bubble);content.appendChild(time);
+
+      // Delete button — show for own messages and AI messages
+      if(isOwn||isAI){
+        const del=document.createElement('button');
+        del.className='del-btn';del.textContent='Delete';
+        del.onclick=()=>deleteMsg(msg.id);
+        row.appendChild(del);
+      }
+
       row.appendChild(av);row.appendChild(content);
       area.appendChild(row);
     });
-    if(atBottom||sending)area.scrollTop=area.scrollHeight;
+    if(atBottom)area.scrollTop=area.scrollHeight;
+  }catch(e){console.error(e);}
+}
+
+async function deleteMsg(id){
+  try{
+    await fetch('/api/messages/'+id,{method:'DELETE',headers:{'Authorization':'Bearer '+token}});
+    await loadMessages();
   }catch(e){console.error(e);}
 }
 
 function showTyping(){
   const area=document.getElementById('msgs');
-  const row=document.createElement('div');
-  row.className='typing-row';row.id='typingRow';
+  const row=document.createElement('div');row.className='typing-row';row.id='typingRow';
   const av=document.createElement('div');av.className='m-av ai-av';av.textContent='G';
   const bubble=document.createElement('div');bubble.className='typing-bubble';
   bubble.innerHTML='<div class="dot"></div><div class="dot"></div><div class="dot"></div>';
-  row.appendChild(av);row.appendChild(bubble);
-  area.appendChild(row);
+  row.appendChild(av);row.appendChild(bubble);area.appendChild(row);
   area.scrollTop=area.scrollHeight;
 }
-
-function hideTyping(){
-  const t=document.getElementById('typingRow');
-  if(t)t.remove();
-}
+function hideTyping(){const t=document.getElementById('typingRow');if(t)t.remove();}
 
 async function sendMsg(){
   if(sending)return;
   const ta=document.getElementById('msgTa');
-  const message=ta.value.trim();
-  if(!message)return;
-  sending=true;
-  ta.value='';ta.style.height='auto';
+  const message=ta.value.trim();if(!message)return;
+  sending=true;ta.value='';ta.style.height='auto';
   document.getElementById('sendBtn').classList.remove('on');
   showTyping();
   try{
     await fetch('/api/messages',{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+token},body:JSON.stringify({roomId:currentRoom,message})});
     await loadMessages();
-  }catch(e){console.error(e);}finally{
-    hideTyping();
-    sending=false;
-  }
+  }catch(e){console.error(e);}finally{hideTyping();sending=false;}
 }
+
+// New chat modal
+function openModal(){document.getElementById('modalBg').style.display='flex';document.getElementById('newRoomName').focus();}
+function closeModal(){document.getElementById('modalBg').style.display='none';document.getElementById('newRoomName').value='';}
+async function createRoom(){
+  const name=document.getElementById('newRoomName').value.trim();
+  if(!name){alert('Enter a room name');return;}
+  try{
+    const r=await fetch('/api/rooms',{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+token},body:JSON.stringify({name})});
+    const d=await r.json();
+    if(d.success){closeModal();await loadRooms();switchRoom(d.id,d.name);}
+    else alert('Error: '+d.error);
+  }catch(e){alert('Error: '+e.message);}
+}
+document.getElementById('newRoomName').addEventListener('keydown',e=>{if(e.key==='Enter')createRoom();if(e.key==='Escape')closeModal();});
 
 function handleKey(e){if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();sendMsg();}}
 function autoResize(el){el.style.height='auto';el.style.height=Math.min(el.scrollHeight,140)+'px';}
 function toggleSend(el){document.getElementById('sendBtn').classList.toggle('on',el.value.trim().length>0);}
-function newChat(){document.getElementById('msgs').innerHTML='<div class="empty-state"><div class="es-icon">&#10022;</div><h3>Ask Gemini anything</h3><p>Select a room to start</p></div>';}
 function logout(){localStorage.clear();if(refreshInterval)clearInterval(refreshInterval);location.reload();}
-function escHtml(s){if(!s)return'';return s.replace(/[&<>]/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[m]));}
+function escH(s){if(!s)return'';return s.replace(/[&<>]/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[m]));}
 
-// Auto-login from saved session
 const st=localStorage.getItem('token'),su=localStorage.getItem('user');
 if(st&&su){token=st;currentUser=JSON.parse(su);startChat();}
 const ch=JSON.parse(localStorage.getItem('ch')||'[]');
