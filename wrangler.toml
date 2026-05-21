@@ -5,4 +5,4 @@ compatibility_date = "2026-01-01"
 [[d1_databases]]
 binding = "DB"
 database_name = "records_db"
-database_id = "PASTE_YOUR_D1_ID"
+database_id = "efefe0e5-9f85-4547-9237-9552889ea1c0"
