@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>Records App</title>
+
+<style>
+body{font-family:Arial;background:#0f172a;color:white}
+.container{max-width:800px;margin:40px auto}
+form{display:flex;gap:10px}
+input{flex:1;padding:10px}
+button{padding:10px;background:#38bdf8;border:none}
+.card{background:#1e293b;margin:10px 0;padding:10px;display:flex;justify-content:space-between}
+.delete{background:red;color:white}
+</style>
+</head>
+
+<body>
+<div class="container">
+<h1>Records App</h1>
+
+<form id="form">
+<input id="name" placeholder="Name" required>
+<input id="email" placeholder="Email" required>
+<button>Add</button>
+</form>
+
+<div id="list"></div>
+</div>
+
+<script>
+const API = "/api/records";
+
+async function load(){
+  const res = await fetch(API);
+  const data = await res.json();
+
+  const list = document.getElementById("list");
+  list.innerHTML = "";
+
+  data.forEach(r=>{
+    const div = document.createElement("div");
+    div.className="card";
+    div.innerHTML = `
+      <div>${r.name}<br>${r.email}</div>
+      <button class="delete" onclick="del(${r.id})">X</button>
+    `;
+    list.appendChild(div);
+  });
+}
+
+async function del(id){
+  await fetch(API+"/"+id,{method:"DELETE"});
+  load();
+}
+
+document.getElementById("form").onsubmit = async(e)=>{
+  e.preventDefault();
+
+  await fetch(API,{
+    method:"POST",
+    headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({
+      name:name.value,
+      email:email.value
+    })
+  });
+
+  form.reset();
+  load();
+}
+
+load();
+</script>
+</body>
+</html>
