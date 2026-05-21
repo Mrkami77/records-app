@@ -7,11 +7,10 @@ binding = "DB"
 database_name = "chat_db"
 database_id = "efefe0e5-9f85-4547-9237-9552889ea1c0"
 
-# Enable production features
+# Ye lines HATADO - ye D1 ke andar nahi aani chahiye
+# workers_dev = true
+# preview_urls = true
+
+# Inhe TOP level par rakho (if needed)
 workers_dev = true
 preview_urls = true
-
-# Environment variables for JWT
-[vars]
-JWT_SECRET = "your-super-secret-jwt-key-change-this"
-ADMIN_API_KEY = "admin-secret-key-2024"

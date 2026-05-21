@@ -29,21 +29,18 @@ export default {
     const path = url.pathname;
     const method = request.method;
 
-    // Handle CORS preflight
     if (method === 'OPTIONS') {
       return new Response(null, { headers: corsHeaders });
     }
 
-    // Initialize database tables
     try {
       await initDatabase(env);
     } catch (err) {
       console.error('DB Init Error:', err);
     }
 
-    // Auth middleware (except for login/register)
     const publicPaths = ['/api/auth/login', '/api/auth/register', '/api/health', '/'];
-    const isPublic = publicPaths.some(p => path === p || path.startsWith('/api/public'));
+    const isPublic = publicPaths.some(p => path === p);
     
     let user = null;
     if (!isPublic) {
@@ -60,24 +57,16 @@ export default {
       }
     }
 
-    // Routes
     if (path === '/' || path === '/index.html') {
       return serveHTML();
     }
 
-    // Auth routes
     if (path === '/api/auth/register' && method === 'POST') {
       return handleRegister(request, env);
     }
     if (path === '/api/auth/login' && method === 'POST') {
       return handleLogin(request, env);
     }
-    if (path === '/api/auth/logout' && method === 'POST') {
-      return new Response(JSON.stringify({ success: true }), 
-        { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
-    }
-
-    // Messages routes
     if (path === '/api/messages' && method === 'GET') {
       const roomId = url.searchParams.get('room') || 'general';
       const limit = parseInt(url.searchParams.get('limit')) || 50;
@@ -86,28 +75,15 @@ export default {
     if (path === '/api/messages' && method === 'POST') {
       return sendMessage(request, env, user);
     }
-    if (path.match(/\/api\/messages\/\d+/) && method === 'DELETE') {
-      const messageId = parseInt(path.split('/').pop());
-      return deleteMessage(env, messageId, user);
-    }
-
-    // Rooms routes
     if (path === '/api/rooms' && method === 'GET') {
       return getRooms(env, user);
     }
-    if (path === '/api/rooms' && method === 'POST') {
-      return createRoom(request, env, user);
-    }
-
-    // Users routes
     if (path === '/api/users' && method === 'GET') {
       return getUsers(env);
     }
     if (path === '/api/users/status' && method === 'PUT') {
       return updateStatus(request, env, user);
     }
-
-    // Health check
     if (path === '/api/health') {
       return new Response(JSON.stringify({ status: 'healthy', timestamp: new Date().toISOString() }), 
         { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
@@ -119,7 +95,6 @@ export default {
 };
 
 async function initDatabase(env) {
-  // Create tables if not exist
   const tables = [
     `CREATE TABLE IF NOT EXISTS users (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -157,7 +132,6 @@ async function initDatabase(env) {
     await env.DB.prepare(sql).run();
   }
   
-  // Insert default rooms
   const defaultRooms = [
     ['general', 'General Chat', 'public'],
     ['random', 'Random Talks', 'public'],
@@ -180,7 +154,6 @@ async function handleRegister(request, env) {
         { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
     }
     
-    // Simple password hash (use bcrypt in production)
     const hash = btoa(password + 'salt');
     
     try {
@@ -255,7 +228,7 @@ async function sendMessage(request, env, user) {
   try {
     const { roomId, message, messageType = 'text', fileUrl } = await request.json();
     
-    await env.DB.prepare(
+    const result = await env.DB.prepare(
       `INSERT INTO messages (room_id, user_id, username, message, message_type, file_url) 
        VALUES (?, ?, ?, ?, ?, ?)`
     ).bind(roomId, user.id, user.username, message, messageType, fileUrl).run();
@@ -273,24 +246,6 @@ async function sendMessage(request, env, user) {
   }
 }
 
-async function deleteMessage(env, messageId, user) {
-  const message = await env.DB.prepare(
-    `SELECT user_id FROM messages WHERE id = ?`
-  ).bind(messageId).first();
-  
-  if (!message || (message.user_id !== user.id && user.role !== 'admin')) {
-    return new Response(JSON.stringify({ error: 'Unauthorized' }), 
-      { status: 403, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
-  }
-  
-  await env.DB.prepare(
-    `UPDATE messages SET is_deleted = 1 WHERE id = ?`
-  ).bind(messageId).run();
-  
-  return new Response(JSON.stringify({ success: true }), 
-    { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
-}
-
 async function getRooms(env, user) {
   const rooms = await env.DB.prepare(
     `SELECT id, name, type, created_at FROM rooms ORDER BY name`
@@ -298,22 +253,6 @@ async function getRooms(env, user) {
   
   return new Response(JSON.stringify(rooms.results), 
     { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
-}
-
-async function createRoom(request, env, user) {
-  try {
-    const { id, name, type = 'public' } = await request.json();
-    
-    await env.DB.prepare(
-      `INSERT INTO rooms (id, name, type, created_by) VALUES (?, ?, ?, ?)`
-    ).bind(id, name, type, user.id).run();
-    
-    return new Response(JSON.stringify({ success: true, room: { id, name, type } }), 
-      { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
-  } catch (err) {
-    return new Response(JSON.stringify({ error: err.message }), 
-      { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
-  }
 }
 
 async function getUsers(env) {
@@ -342,624 +281,7 @@ async function updateStatus(request, env, user) {
 }
 
 function serveHTML() {
-  const html = `<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Enterprise Chat - Professional Communication Platform</title>
-    <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
-
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', sans-serif;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            height: 100vh;
-            overflow: hidden;
-        }
-
-        /* Auth Container */
-        .auth-container {
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            height: 100vh;
-            backdrop-filter: blur(10px);
-        }
-
-        .auth-card {
-            background: white;
-            border-radius: 20px;
-            padding: 40px;
-            width: 400px;
-            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
-            animation: slideUp 0.5s ease;
-        }
-
-        @keyframes slideUp {
-            from {
-                opacity: 0;
-                transform: translateY(50px);
-            }
-            to {
-                opacity: 1;
-                transform: translateY(0);
-            }
-        }
-
-        .auth-card h2 {
-            margin-bottom: 30px;
-            color: #333;
-            text-align: center;
-        }
-
-        .input-group {
-            margin-bottom: 20px;
-        }
-
-        .input-group input {
-            width: 100%;
-            padding: 12px 15px;
-            border: 2px solid #e0e0e0;
-            border-radius: 10px;
-            font-size: 14px;
-            transition: all 0.3s;
-        }
-
-        .input-group input:focus {
-            outline: none;
-            border-color: #667eea;
-        }
-
-        .btn {
-            width: 100%;
-            padding: 12px;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white;
-            border: none;
-            border-radius: 10px;
-            font-size: 16px;
-            font-weight: 600;
-            cursor: pointer;
-            transition: transform 0.2s;
-        }
-
-        .btn:hover {
-            transform: translateY(-2px);
-        }
-
-        .auth-switch {
-            text-align: center;
-            margin-top: 20px;
-            color: #666;
-        }
-
-        .auth-switch a {
-            color: #667eea;
-            text-decoration: none;
-            cursor: pointer;
-        }
-
-        /* Chat Container */
-        .chat-container {
-            display: none;
-            height: 100vh;
-            background: #f5f7fb;
-        }
-
-        .chat-sidebar {
-            background: white;
-            width: 280px;
-            border-right: 1px solid #e0e0e0;
-            display: flex;
-            flex-direction: column;
-        }
-
-        .user-info {
-            padding: 20px;
-            border-bottom: 1px solid #e0e0e0;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white;
-        }
-
-        .user-name {
-            font-size: 18px;
-            font-weight: 600;
-        }
-
-        .user-status {
-            font-size: 12px;
-            opacity: 0.9;
-            margin-top: 5px;
-        }
-
-        .rooms-list {
-            flex: 1;
-            overflow-y: auto;
-            padding: 10px;
-        }
-
-        .room-item {
-            padding: 12px 15px;
-            margin: 5px 0;
-            border-radius: 10px;
-            cursor: pointer;
-            transition: all 0.3s;
-            display: flex;
-            align-items: center;
-            gap: 10px;
-        }
-
-        .room-item:hover {
-            background: #f0f0f0;
-        }
-
-        .room-item.active {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white;
-        }
-
-        .room-icon {
-            width: 30px;
-            height: 30px;
-            background: #e0e0e0;
-            border-radius: 8px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-        }
-
-        .chat-main {
-            flex: 1;
-            display: flex;
-            flex-direction: column;
-        }
-
-        .chat-header {
-            background: white;
-            padding: 20px;
-            border-bottom: 1px solid #e0e0e0;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.05);
-        }
-
-        .current-room {
-            font-size: 20px;
-            font-weight: 600;
-            color: #333;
-        }
-
-        .messages-area {
-            flex: 1;
-            overflow-y: auto;
-            padding: 20px;
-            display: flex;
-            flex-direction: column;
-            gap: 15px;
-        }
-
-        .message {
-            display: flex;
-            animation: fadeIn 0.3s ease;
-        }
-
-        @keyframes fadeIn {
-            from {
-                opacity: 0;
-                transform: translateY(10px);
-            }
-            to {
-                opacity: 1;
-                transform: translateY(0);
-            }
-        }
-
-        .message-own {
-            justify-content: flex-end;
-        }
-
-        .message-bubble {
-            max-width: 60%;
-            padding: 10px 15px;
-            border-radius: 15px;
-            background: white;
-            box-shadow: 0 1px 2px rgba(0,0,0,0.1);
-        }
-
-        .message-own .message-bubble {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white;
-        }
-
-        .message-sender {
-            font-size: 12px;
-            font-weight: 600;
-            margin-bottom: 5px;
-            color: #667eea;
-        }
-
-        .message-own .message-sender {
-            color: rgba(255,255,255,0.9);
-        }
-
-        .message-time {
-            font-size: 10px;
-            margin-top: 5px;
-            opacity: 0.7;
-            text-align: right;
-        }
-
-        .chat-input-area {
-            background: white;
-            padding: 20px;
-            border-top: 1px solid #e0e0e0;
-            display: flex;
-            gap: 10px;
-        }
-
-        .chat-input {
-            flex: 1;
-            padding: 12px;
-            border: 2px solid #e0e0e0;
-            border-radius: 10px;
-            font-size: 14px;
-        }
-
-        .chat-input:focus {
-            outline: none;
-            border-color: #667eea;
-        }
-
-        .send-btn {
-            padding: 12px 30px;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white;
-            border: none;
-            border-radius: 10px;
-            cursor: pointer;
-            font-weight: 600;
-        }
-
-        .logout-btn {
-            margin-top: 10px;
-            background: rgba(255,255,255,0.2);
-            border: 1px solid rgba(255,255,255,0.3);
-            color: white;
-            padding: 8px;
-            border-radius: 8px;
-            cursor: pointer;
-            width: 100%;
-        }
-
-        .users-list {
-            width: 250px;
-            background: white;
-            border-left: 1px solid #e0e0e0;
-            padding: 20px;
-            overflow-y: auto;
-        }
-
-        .users-list h4 {
-            margin-bottom: 15px;
-            color: #333;
-        }
-
-        .user-item {
-            display: flex;
-            align-items: center;
-            gap: 10px;
-            padding: 8px;
-            margin: 5px 0;
-            border-radius: 8px;
-            cursor: pointer;
-        }
-
-        .user-status-dot {
-            width: 8px;
-            height: 8px;
-            border-radius: 50%;
-            background: #4caf50;
-        }
-
-        .user-status-dot.offline {
-            background: #9e9e9e;
-        }
-
-        @media (max-width: 768px) {
-            .chat-sidebar, .users-list {
-                display: none;
-            }
-        }
-    </style>
-  </head>
-  <body>
-    <!-- Auth Container -->
-    <div id="authContainer" class="auth-container">
-        <div class="auth-card">
-            <h2 id="authTitle">Login</h2>
-            <div id="authForm">
-                <div class="input-group">
-                    <input type="text" id="loginUsername" placeholder="Username">
-                </div>
-                <div class="input-group">
-                    <input type="password" id="loginPassword" placeholder="Password">
-                </div>
-                <button class="btn" onclick="handleAuth()">Login</button>
-                <div class="auth-switch">
-                    Don't have an account? <a onclick="toggleAuth()">Register</a>
-                </div>
-            </div>
-        </div>
-    </div>
-
-    <!-- Chat Container -->
-    <div id="chatContainer" class="chat-container" style="display: none;">
-        <div style="display: flex; height: 100vh;">
-            <!-- Sidebar -->
-            <div class="chat-sidebar">
-                <div class="user-info">
-                    <div class="user-name" id="currentUser">Loading...</div>
-                    <div class="user-status">Online</div>
-                    <button class="logout-btn" onclick="logout()">Logout</button>
-                </div>
-                <div class="rooms-list" id="roomsList"></div>
-            </div>
-
-            <!-- Chat Main -->
-            <div class="chat-main">
-                <div class="chat-header">
-                    <div class="current-room" id="currentRoom">General Chat</div>
-                </div>
-                <div class="messages-area" id="messagesArea"></div>
-                <div class="chat-input-area">
-                    <input type="text" class="chat-input" id="messageInput" placeholder="Type your message..." onkeypress="if(event.key==='Enter') sendMessage()">
-                    <button class="send-btn" onclick="sendMessage()">Send</button>
-                </div>
-            </div>
-
-            <!-- Users List -->
-            <div class="users-list">
-                <h4>Online Users</h4>
-                <div id="usersList"></div>
-            </div>
-        </div>
-    </div>
-
-    <script>
-        let currentUser = null;
-        let currentRoom = 'general';
-        let token = null;
-        let messagePolling = null;
-
-        async function handleAuth() {
-            const isLogin = document.getElementById('authTitle').innerText === 'Login';
-            if (isLogin) {
-                const username = document.getElementById('loginUsername').value;
-                const password = document.getElementById('loginPassword').value;
-                await login(username, password);
-            } else {
-                const username = document.getElementById('loginUsername').value;
-                const password = document.getElementById('loginPassword').value;
-                const email = prompt('Enter your email:');
-                if (email) await register(username, email, password);
-            }
-        }
-
-        async function login(username, password) {
-            try {
-                const res = await fetch('/api/auth/login', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ username, password })
-                });
-                const data = await res.json();
-                if (data.success) {
-                    token = data.token;
-                    currentUser = data.user;
-                    localStorage.setItem('token', token);
-                    localStorage.setItem('user', JSON.stringify(currentUser));
-                    showChat();
-                    loadMessages();
-                    loadRooms();
-                    loadUsers();
-                    startPolling();
-                } else {
-                    alert('Login failed: ' + data.error);
-                }
-            } catch (err) {
-                alert('Error: ' + err.message);
-            }
-        }
-
-        async function register(username, email, password) {
-            try {
-                const res = await fetch('/api/auth/register', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ username, email, password })
-                });
-                const data = await res.json();
-                if (data.success) {
-                    token = data.token;
-                    currentUser = data.user;
-                    localStorage.setItem('token', token);
-                    localStorage.setItem('user', JSON.stringify(currentUser));
-                    showChat();
-                    loadMessages();
-                    loadRooms();
-                    loadUsers();
-                    startPolling();
-                } else {
-                    alert('Registration failed: ' + data.error);
-                }
-            } catch (err) {
-                alert('Error: ' + err.message);
-            }
-        }
-
-        function toggleAuth() {
-            const title = document.getElementById('authTitle');
-            const btn = document.querySelector('#authForm .btn');
-            const switchText = document.querySelector('.auth-switch');
-            
-            if (title.innerText === 'Login') {
-                title.innerText = 'Register';
-                btn.innerText = 'Register';
-                switchText.innerHTML = 'Already have an account? <a onclick="toggleAuth()">Login</a>';
-            } else {
-                title.innerText = 'Login';
-                btn.innerText = 'Login';
-                switchText.innerHTML = 'Don\'t have an account? <a onclick="toggleAuth()">Register</a>';
-            }
-        }
-
-        function showChat() {
-            document.getElementById('authContainer').style.display = 'none';
-            document.getElementById('chatContainer').style.display = 'block';
-            document.getElementById('currentUser').innerText = currentUser.username;
-        }
-
-        async function loadMessages() {
-            try {
-                const res = await fetch(`/api/messages?room=${currentRoom}`, {
-                    headers: { 'Authorization': `Bearer ${token}` }
-                });
-                const messages = await res.json();
-                const messagesArea = document.getElementById('messagesArea');
-                messagesArea.innerHTML = '';
-                messages.forEach(msg => {
-                    const messageDiv = document.createElement('div');
-                    messageDiv.className = `message ${msg.user_id === currentUser.id ? 'message-own' : ''}`;
-                    messageDiv.innerHTML = \`
-                        <div class="message-bubble">
-                            <div class="message-sender">\${escapeHtml(msg.username)}</div>
-                            <div>\${escapeHtml(msg.message)}</div>
-                            <div class="message-time">\${new Date(msg.created_at).toLocaleTimeString()}</div>
-                        </div>
-                    \`;
-                    messagesArea.appendChild(messageDiv);
-                });
-                messagesArea.scrollTop = messagesArea.scrollHeight;
-            } catch (err) {
-                console.error('Load messages error:', err);
-            }
-        }
-
-        async function sendMessage() {
-            const input = document.getElementById('messageInput');
-            const message = input.value.trim();
-            if (!message) return;
-            
-            try {
-                const res = await fetch('/api/messages', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                        'Authorization': `Bearer ${token}`
-                    },
-                    body: JSON.stringify({ roomId: currentRoom, message })
-                });
-                if (res.ok) {
-                    input.value = '';
-                    loadMessages();
-                }
-            } catch (err) {
-                console.error('Send message error:', err);
-            }
-        }
-
-        async function loadRooms() {
-            try {
-                const res = await fetch('/api/rooms', {
-                    headers: { 'Authorization': `Bearer ${token}` }
-                });
-                const rooms = await res.json();
-                const roomsList = document.getElementById('roomsList');
-                roomsList.innerHTML = '';
-                rooms.forEach(room => {
-                    const roomDiv = document.createElement('div');
-                    roomDiv.className = \`room-item \${room.id === currentRoom ? 'active' : ''}\`;
-                    roomDiv.innerHTML = \`
-                        <div class="room-icon">#</div>
-                        <div>\${escapeHtml(room.name)}</div>
-                    \`;
-                    roomDiv.onclick = () => {
-                        currentRoom = room.id;
-                        document.getElementById('currentRoom').innerText = room.name;
-                        loadMessages();
-                        loadRooms();
-                    };
-                    roomsList.appendChild(roomDiv);
-                });
-            } catch (err) {
-                console.error('Load rooms error:', err);
-            }
-        }
-
-        async function loadUsers() {
-            try {
-                const res = await fetch('/api/users', {
-                    headers: { 'Authorization': `Bearer ${token}` }
-                });
-                const users = await res.json();
-                const usersList = document.getElementById('usersList');
-                usersList.innerHTML = '';
-                users.forEach(user => {
-                    const userDiv = document.createElement('div');
-                    userDiv.className = 'user-item';
-                    userDiv.innerHTML = \`
-                        <div class="user-status-dot \${user.status === 'online' ? '' : 'offline'}"></div>
-                        <div>\${escapeHtml(user.username)}</div>
-                    \`;
-                    usersList.appendChild(userDiv);
-                });
-            } catch (err) {
-                console.error('Load users error:', err);
-            }
-        }
-
-        async function logout() {
-            localStorage.removeItem('token');
-            localStorage.removeItem('user');
-            if (messagePolling) clearInterval(messagePolling);
-            location.reload();
-        }
-
-        function startPolling() {
-            if (messagePolling) clearInterval(messagePolling);
-            messagePolling = setInterval(() => {
-                if (currentUser) loadMessages();
-            }, 3000);
-        }
-
-        function escapeHtml(str) {
-            if (!str) return '';
-            return str.replace(/[&<>]/g, function(m) {
-                if (m === '&') return '&amp;';
-                if (m === '<') return '&lt;';
-                if (m === '>') return '&gt;';
-                return m;
-            });
-        }
-
-        // Check for existing session
-        const savedToken = localStorage.getItem('token');
-        const savedUser = localStorage.getItem('user');
-        if (savedToken && savedUser) {
-            token = savedToken;
-            currentUser = JSON.parse(savedUser);
-            showChat();
-            loadMessages();
-            loadRooms();
-            loadUsers();
-            startPolling();
-        }
-    </script>
-  </body>
-</html>`;
+  const html = '<!DOCTYPE html>\n<html lang="en">\n<head>\n    <meta charset="UTF-8">\n    <meta name="viewport" content="width=device-width, initial-scale=1.0">\n    <title>Enterprise Chat - Professional Communication Platform</title>\n    <style>\n        * {\n            margin: 0;\n            padding: 0;\n            box-sizing: border-box;\n        }\n\n        body {\n            font-family: -apple-system, BlinkMacSystemFont, \'Segoe UI\', Roboto, \'Helvetica Neue\', sans-serif;\n            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);\n            height: 100vh;\n            overflow: hidden;\n        }\n\n        .auth-container {\n            display: flex;\n            justify-content: center;\n            align-items: center;\n            height: 100vh;\n            backdrop-filter: blur(10px);\n        }\n\n        .auth-card {\n            background: white;\n            border-radius: 20px;\n            padding: 40px;\n            width: 400px;\n            box-shadow: 0 20px 60px rgba(0,0,0,0.3);\n            animation: slideUp 0.5s ease;\n        }\n\n        @keyframes slideUp {\n            from {\n                opacity: 0;\n                transform: translateY(50px);\n            }\n            to {\n                opacity: 1;\n                transform: translateY(0);\n            }\n        }\n\n        .auth-card h2 {\n            margin-bottom: 30px;\n            color: #333;\n            text-align: center;\n        }\n\n        .input-group {\n            margin-bottom: 20px;\n        }\n\n        .input-group input {\n            width: 100%;\n            padding: 12px 15px;\n            border: 2px solid #e0e0e0;\n            border-radius: 10px;\n            font-size: 14px;\n            transition: all 0.3s;\n        }\n\n        .input-group input:focus {\n            outline: none;\n            border-color: #667eea;\n        }\n\n        .btn {\n            width: 100%;\n            padding: 12px;\n            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);\n            color: white;\n            border: none;\n            border-radius: 10px;\n            font-size: 16px;\n            font-weight: 600;\n            cursor: pointer;\n            transition: transform 0.2s;\n        }\n\n        .btn:hover {\n            transform: translateY(-2px);\n        }\n\n        .auth-switch {\n            text-align: center;\n            margin-top: 20px;\n            color: #666;\n        }\n\n        .auth-switch a {\n            color: #667eea;\n            text-decoration: none;\n            cursor: pointer;\n        }\n\n        .chat-container {\n            display: none;\n            height: 100vh;\n            background: #f5f7fb;\n        }\n\n        .chat-sidebar {\n            background: white;\n            width: 280px;\n            border-right: 1px solid #e0e0e0;\n            display: flex;\n            flex-direction: column;\n        }\n\n        .user-info {\n            padding: 20px;\n            border-bottom: 1px solid #e0e0e0;\n            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);\n            color: white;\n        }\n\n        .user-name {\n            font-size: 18px;\n            font-weight: 600;\n        }\n\n        .user-status {\n            font-size: 12px;\n            opacity: 0.9;\n            margin-top: 5px;\n        }\n\n        .rooms-list {\n            flex: 1;\n            overflow-y: auto;\n            padding: 10px;\n        }\n\n        .room-item {\n            padding: 12px 15px;\n            margin: 5px 0;\n            border-radius: 10px;\n            cursor: pointer;\n            transition: all 0.3s;\n            display: flex;\n            align-items: center;\n            gap: 10px;\n        }\n\n        .room-item:hover {\n            background: #f0f0f0;\n        }\n\n        .room-item.active {\n            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);\n            color: white;\n        }\n\n        .room-icon {\n            width: 30px;\n            height: 30px;\n            background: #e0e0e0;\n            border-radius: 8px;\n            display: flex;\n            align-items: center;\n            justify-content: center;\n        }\n\n        .chat-main {\n            flex: 1;\n            display: flex;\n            flex-direction: column;\n        }\n\n        .chat-header {\n            background: white;\n            padding: 20px;\n            border-bottom: 1px solid #e0e0e0;\n            box-shadow: 0 2px 4px rgba(0,0,0,0.05);\n        }\n\n        .current-room {\n            font-size: 20px;\n            font-weight: 600;\n            color: #333;\n        }\n\n        .messages-area {\n            flex: 1;\n            overflow-y: auto;\n            padding: 20px;\n            display: flex;\n            flex-direction: column;\n            gap: 15px;\n        }\n\n        .message {\n            display: flex;\n            animation: fadeIn 0.3s ease;\n        }\n\n        @keyframes fadeIn {\n            from {\n                opacity: 0;\n                transform: translateY(10px);\n            }\n            to {\n                opacity: 1;\n                transform: translateY(0);\n            }\n        }\n\n        .message-own {\n            justify-content: flex-end;\n        }\n\n        .message-bubble {\n            max-width: 60%;\n            padding: 10px 15px;\n            border-radius: 15px;\n            background: white;\n            box-shadow: 0 1px 2px rgba(0,0,0,0.1);\n        }\n\n        .message-own .message-bubble {\n            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);\n            color: white;\n        }\n\n        .message-sender {\n            font-size: 12px;\n            font-weight: 600;\n            margin-bottom: 5px;\n            color: #667eea;\n        }\n\n        .message-own .message-sender {\n            color: rgba(255,255,255,0.9);\n        }\n\n        .message-time {\n            font-size: 10px;\n            margin-top: 5px;\n            opacity: 0.7;\n            text-align: right;\n        }\n\n        .chat-input-area {\n            background: white;\n            padding: 20px;\n            border-top: 1px solid #e0e0e0;\n            display: flex;\n            gap: 10px;\n        }\n\n        .chat-input {\n            flex: 1;\n            padding: 12px;\n            border: 2px solid #e0e0e0;\n            border-radius: 10px;\n            font-size: 14px;\n        }\n\n        .chat-input:focus {\n            outline: none;\n            border-color: #667eea;\n        }\n\n        .send-btn {\n            padding: 12px 30px;\n            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);\n            color: white;\n            border: none;\n            border-radius: 10px;\n            cursor: pointer;\n            font-weight: 600;\n        }\n\n        .logout-btn {\n            margin-top: 10px;\n            background: rgba(255,255,255,0.2);\n            border: 1px solid rgba(255,255,255,0.3);\n            color: white;\n            padding: 8px;\n            border-radius: 8px;\n            cursor: pointer;\n            width: 100%;\n        }\n\n        .users-list {\n            width: 250px;\n            background: white;\n            border-left: 1px solid #e0e0e0;\n            padding: 20px;\n            overflow-y: auto;\n        }\n\n        .users-list h4 {\n            margin-bottom: 15px;\n            color: #333;\n        }\n\n        .user-item {\n            display: flex;\n            align-items: center;\n            gap: 10px;\n            padding: 8px;\n            margin: 5px 0;\n            border-radius: 8px;\n            cursor: pointer;\n        }\n\n        .user-status-dot {\n            width: 8px;\n            height: 8px;\n            border-radius: 50%;\n            background: #4caf50;\n        }\n\n        .user-status-dot.offline {\n            background: #9e9e9e;\n        }\n\n        @media (max-width: 768px) {\n            .chat-sidebar, .users-list {\n                display: none;\n            }\n        }\n    </style>\n</head>\n<body>\n    <div id="authContainer" class="auth-container">\n        <div class="auth-card">\n            <h2 id="authTitle">Login</h2>\n            <div id="authForm">\n                <div class="input-group">\n                    <input type="text" id="loginUsername" placeholder="Username">\n                </div>\n                <div class="input-group">\n                    <input type="password" id="loginPassword" placeholder="Password">\n                </div>\n                <button class="btn" onclick="handleAuth()">Login</button>\n                <div class="auth-switch">\n                    Don\'t have an account? <a onclick="toggleAuth()">Register</a>\n                </div>\n            </div>\n        </div>\n    </div>\n\n    <div id="chatContainer" class="chat-container" style="display: none;">\n        <div style="display: flex; height: 100vh;">\n            <div class="chat-sidebar">\n                <div class="user-info">\n                    <div class="user-name" id="currentUser">Loading...</div>\n                    <div class="user-status">Online</div>\n                    <button class="logout-btn" onclick="logout()">Logout</button>\n                </div>\n                <div class="rooms-list" id="roomsList"></div>\n            </div>\n\n            <div class="chat-main">\n                <div class="chat-header">\n                    <div class="current-room" id="currentRoom">General Chat</div>\n                </div>\n                <div class="messages-area" id="messagesArea"></div>\n                <div class="chat-input-area">\n                    <input type="text" class="chat-input" id="messageInput" placeholder="Type your message..." onkeypress="if(event.key===\'Enter\') sendMessage()">\n                    <button class="send-btn" onclick="sendMessage()">Send</button>\n                </div>\n            </div>\n\n            <div class="users-list">\n                <h4>Online Users</h4>\n                <div id="usersList"></div>\n            </div>\n        </div>\n    </div>\n\n    <script>\n        let currentUser = null;\n        let currentRoom = \'general\';\n        let token = null;\n        let messagePolling = null;\n\n        async function handleAuth() {\n            const isLogin = document.getElementById(\'authTitle\').innerText === \'Login\';\n            if (isLogin) {\n                const username = document.getElementById(\'loginUsername\').value;\n                const password = document.getElementById(\'loginPassword\').value;\n                await login(username, password);\n            } else {\n                const username = document.getElementById(\'loginUsername\').value;\n                const password = document.getElementById(\'loginPassword\').value;\n                const email = prompt(\'Enter your email:\');\n                if (email) await register(username, email, password);\n            }\n        }\n\n        async function login(username, password) {\n            try {\n                const res = await fetch(\'/api/auth/login\', {\n                    method: \'POST\',\n                    headers: { \'Content-Type\': \'application/json\' },\n                    body: JSON.stringify({ username, password })\n                });\n                const data = await res.json();\n                if (data.success) {\n                    token = data.token;\n                    currentUser = data.user;\n                    localStorage.setItem(\'token\', token);\n                    localStorage.setItem(\'user\', JSON.stringify(currentUser));\n                    showChat();\n                    loadMessages();\n                    loadRooms();\n                    loadUsers();\n                    startPolling();\n                } else {\n                    alert(\'Login failed: \' + data.error);\n                }\n            } catch (err) {\n                alert(\'Error: \' + err.message);\n            }\n        }\n\n        async function register(username, email, password) {\n            try {\n                const res = await fetch(\'/api/auth/register\', {\n                    method: \'POST\',\n                    headers: { \'Content-Type\': \'application/json\' },\n                    body: JSON.stringify({ username, email, password })\n                });\n                const data = await res.json();\n                if (data.success) {\n                    token = data.token;\n                    currentUser = data.user;\n                    localStorage.setItem(\'token\', token);\n                    localStorage.setItem(\'user\', JSON.stringify(currentUser));\n                    showChat();\n                    loadMessages();\n                    loadRooms();\n                    loadUsers();\n                    startPolling();\n                } else {\n                    alert(\'Registration failed: \' + data.error);\n                }\n            } catch (err) {\n                alert(\'Error: \' + err.message);\n            }\n        }\n\n        function toggleAuth() {\n            const title = document.getElementById(\'authTitle\');\n            const btn = document.querySelector(\'#authForm .btn\');\n            const switchText = document.querySelector(\'.auth-switch\');\n            \n            if (title.innerText === \'Login\') {\n                title.innerText = \'Register\';\n                btn.innerText = \'Register\';\n                switchText.innerHTML = \'Already have an account? <a onclick="toggleAuth()">Login</a>\';\n            } else {\n                title.innerText = \'Login\';\n                btn.innerText = \'Login\';\n                switchText.innerHTML = \'Don\\\'t have an account? <a onclick="toggleAuth()">Register</a>\';\n            }\n        }\n\n        function showChat() {\n            document.getElementById(\'authContainer\').style.display = \'none\';\n            document.getElementById(\'chatContainer\').style.display = \'block\';\n            document.getElementById(\'currentUser\').innerText = currentUser.username;\n        }\n\n        async function loadMessages() {\n            try {\n                const res = await fetch(`/api/messages?room=${currentRoom}`, {\n                    headers: { \'Authorization\': `Bearer ${token}` }\n                });\n                const messages = await res.json();\n                const messagesArea = document.getElementById(\'messagesArea\');\n                messagesArea.innerHTML = \'\';\n                messages.forEach(msg => {\n                    const messageDiv = document.createElement(\'div\');\n                    messageDiv.className = `message ${msg.user_id === currentUser.id ? \'message-own\' : \'\'}`;\n                    messageDiv.innerHTML = `\n                        <div class="message-bubble">\n                            <div class="message-sender">${escapeHtml(msg.username)}</div>\n                            <div>${escapeHtml(msg.message)}</div>\n                            <div class="message-time">${new Date(msg.created_at).toLocaleTimeString()}</div>\n                        </div>\n                    `;\n                    messagesArea.appendChild(messageDiv);\n                });\n                messagesArea.scrollTop = messagesArea.scrollHeight;\n            } catch (err) {\n                console.error(\'Load messages error:\', err);\n            }\n        }\n\n        async function sendMessage() {\n            const input = document.getElementById(\'messageInput\');\n            const message = input.value.trim();\n            if (!message) return;\n            \n            try {\n                const res = await fetch(\'/api/messages\', {\n                    method: \'POST\',\n                    headers: {\n                        \'Content-Type\': \'application/json\',\n                        \'Authorization\': `Bearer ${token}`\n                    },\n                    body: JSON.stringify({ roomId: currentRoom, message })\n                });\n                if (res.ok) {\n                    input.value = \'\';\n                    loadMessages();\n                }\n            } catch (err) {\n                console.error(\'Send message error:\', err);\n            }\n        }\n\n        async function loadRooms() {\n            try {\n                const res = await fetch(\'/api/rooms\', {\n                    headers: { \'Authorization\': `Bearer ${token}` }\n                });\n                const rooms = await res.json();\n                const roomsList = document.getElementById(\'roomsList\');\n                roomsList.innerHTML = \'\';\n                rooms.forEach(room => {\n                    const roomDiv = document.createElement(\'div\');\n                    roomDiv.className = `room-item ${room.id === currentRoom ? \'active\' : \'\'}`;\n                    roomDiv.innerHTML = `\n                        <div class="room-icon">#</div>\n                        <div>${escapeHtml(room.name)}</div>\n                    `;\n                    roomDiv.onclick = () => {\n                        currentRoom = room.id;\n                        document.getElementById(\'currentRoom\').innerText = room.name;\n                        loadMessages();\n                        loadRooms();\n                    };\n                    roomsList.appendChild(roomDiv);\n                });\n            } catch (err) {\n                console.error(\'Load rooms error:\', err);\n            }\n        }\n\n        async function loadUsers() {\n            try {\n                const res = await fetch(\'/api/users\', {\n                    headers: { \'Authorization\': `Bearer ${token}` }\n                });\n                const users = await res.json();\n                const usersList = document.getElementById(\'usersList\');\n                usersList.innerHTML = \'\';\n                users.forEach(user => {\n                    const userDiv = document.createElement(\'div\');\n                    userDiv.className = \'user-item\';\n                    userDiv.innerHTML = `\n                        <div class="user-status-dot ${user.status === \'online\' ? \'\' : \'offline\'}"></div>\n                        <div>${escapeHtml(user.username)}</div>\n                    `;\n                    usersList.appendChild(userDiv);\n                });\n            } catch (err) {\n                console.error(\'Load users error:\', err);\n            }\n        }\n\n        async function logout() {\n            localStorage.removeItem(\'token\');\n            localStorage.removeItem(\'user\');\n            if (messagePolling) clearInterval(messagePolling);\n            location.reload();\n        }\n\n        function startPolling() {\n            if (messagePolling) clearInterval(messagePolling);\n            messagePolling = setInterval(() => {\n                if (currentUser) loadMessages();\n            }, 3000);\n        }\n\n        function escapeHtml(str) {\n            if (!str) return \'\';\n            return str.replace(/[&<>]/g, function(m) {\n                if (m === \'&\') return \'&amp;\';\n                if (m === \'<\') return \'&lt;\';\n                if (m === \'>\') return \'&gt;\';\n                return m;\n            });\n        }\n\n        const savedToken = localStorage.getItem(\'token\');\n        const savedUser = localStorage.getItem(\'user\');\n        if (savedToken && savedUser) {\n            token = savedToken;\n            currentUser = JSON.parse(savedUser);\n            showChat();\n            loadMessages();\n            loadRooms();\n            loadUsers();\n            startPolling();\n        }\n    </script>\n</body>\n</html>';
   
   return new Response(html, { headers: { 'Content-Type': 'text/html' } });
 }
