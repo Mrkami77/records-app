@@ -20,7 +20,7 @@ const corsHeaders = {
 };
 
 // PASTE YOUR REAL GEMINI API KEY BELOW (no dashes in the middle)
-const GEMINI_API_KEY = 'AIzaSyB1IGc325RpPvllmA2S78DrleHHOS9nc';
+const GEMINI_API_KEY = 'AIzaSyBAFoqxnaHWypBZils-RRMQqRqJNXFNX2E';
 
 async function getGeminiReply(userMessage, roomName) {
   try {
