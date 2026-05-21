@@ -19,7 +19,8 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'Content-Type, Authorization',
 };
 
-const GEMINI_API_KEY = 'AIzaSyB1I--Gc325RpPvllmA2S78DrleHHOS9nc';
+// PASTE YOUR REAL GEMINI API KEY BELOW (no dashes in the middle)
+const GEMINI_API_KEY = 'AIzaSyB1IGc325RpPvllmA2S78DrleHHOS9nc';
 
 async function getGeminiReply(userMessage, roomName) {
   try {
@@ -38,9 +39,15 @@ async function getGeminiReply(userMessage, roomName) {
       }
     );
     const data = await res.json();
-    return data?.candidates?.[0]?.content?.parts?.[0]?.text || null;
+
+    // If there's an API error, return it as a visible message so you can debug
+    if (data.error) {
+      return `[Gemini error: ${data.error.message}]`;
+    }
+
+    return data?.candidates?.[0]?.content?.parts?.[0]?.text || '[Gemini returned no reply]';
   } catch (e) {
-    return null;
+    return `[Gemini fetch failed: ${e.message}]`;
   }
 }
 
